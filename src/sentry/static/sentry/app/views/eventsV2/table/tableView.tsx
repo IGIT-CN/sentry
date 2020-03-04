@@ -1,19 +1,18 @@
 import React from 'react';
 import styled from '@emotion/styled';
-import {Location} from 'history';
+import {Location, LocationDescriptorObject} from 'history';
 
 import {Organization} from 'app/types';
 import {trackAnalyticsEvent} from 'app/utils/analytics';
 import GridEditable, {COL_WIDTH_UNDEFINED} from 'app/components/gridEditable';
+import {IconEvent, IconStack} from 'app/icons';
 import {t} from 'app/locale';
 import {assert} from 'app/types/utils';
-import InlineSvg from 'app/components/inlineSvg';
 import Link from 'app/components/links/link';
 import Tooltip from 'app/components/tooltip';
 
 import {
   downloadAsCsv,
-  getAggregateAlias,
   getFieldRenderer,
   getExpandedResults,
   pushEventViewToLocation,
@@ -21,14 +20,14 @@ import {
   MetaType,
 } from '../utils';
 import EventView, {pickRelevantLocationQueryStrings} from '../eventView';
-import SortLink, {Alignments} from '../sortLink';
+import SortLink from '../sortLink';
 import renderTableModalEditColumnFactory from './tableModalEditColumn';
 import {TableColumn, TableData, TableDataRow} from './types';
-import {ColumnValueType} from '../eventQueryParams';
+import HeaderCell from './headerCell';
 import DraggableColumns, {
   DRAGGABLE_COLUMN_CLASSNAME_IDENTIFIER,
 } from './draggableColumns';
-import {generateEventDetailsRoute, generateEventSlug} from '../eventDetails/utils';
+import {generateEventSlug, eventDetailsRouteWithEventView} from '../eventDetails/utils';
 
 export type TableViewProps = {
   location: Location;
@@ -220,59 +219,68 @@ class TableView extends React.Component<TableViewProps> {
     dataRow?: any,
     rowIndex?: number
   ): React.ReactNode[] => {
+    const {organization, eventView} = this.props;
+    const hasAggregates = eventView.getAggregateFields().length > 0;
     if (isHeader) {
-      return [<StyledIconStack key="header-icon" src="icon-stack" size="14px" />];
+      return [
+        <HeaderIcon key="header-icon">
+          {hasAggregates ? <IconStack size="sm" /> : <IconEvent size="sm" />}
+        </HeaderIcon>,
+      ];
     }
-    const {organization, location} = this.props;
+
     const eventSlug = generateEventSlug(dataRow);
-    const pathname = generateEventDetailsRoute({
+
+    const target = eventDetailsRouteWithEventView({
       orgSlug: organization.slug,
       eventSlug,
+      eventView,
     });
-    const target = {
-      pathname,
-      query: {...location.query},
-    };
 
     return [
       <Tooltip key={`eventlink${rowIndex}`} title={t('View Details')}>
-        <Link to={target} data-test-id="view-events">
-          <InlineSvg src="icon-stack" size="14px" />
-        </Link>
+        <IconLink to={target} data-test-id="view-events">
+          {hasAggregates ? <IconStack size="sm" /> : <IconEvent size="sm" />}
+        </IconLink>
       </Tooltip>,
     ];
   };
 
   _renderGridHeaderCell = (column: TableColumn<keyof TableDataRow>): React.ReactNode => {
     const {eventView, location, tableData} = this.props;
-    const field = column.eventViewField;
-
-    // establish alignment based on the type
-    const alignedTypes: ColumnValueType[] = ['number', 'duration', 'integer'];
-    let align: Alignments = alignedTypes.includes(column.type) ? 'right' : 'left';
-
-    if (column.type === 'never' || column.type === '*') {
-      // fallback to align the column based on the table metadata
-      const maybeType =
-        tableData && tableData.meta
-          ? tableData.meta[getAggregateAlias(field.field)]
-          : undefined;
-
-      if (maybeType === 'integer' || maybeType === 'number') {
-        align = 'right';
-      }
-    }
 
     return (
-      <SortLink
-        align={align}
-        field={field}
-        location={location}
-        eventView={eventView}
-        /* TODO(leedongwei): Verbosity is due to error in Prettier, fix after
-           upgrade to v1.19.1 */
-        tableDataMeta={tableData && tableData.meta ? tableData.meta : undefined}
-      />
+      <HeaderCell column={column} tableData={tableData}>
+        {({align}) => {
+          const field = column.eventViewField;
+
+          const tableDataMeta = tableData && tableData.meta ? tableData.meta : undefined;
+
+          function generateSortLink(): LocationDescriptorObject | undefined {
+            if (!tableDataMeta) {
+              return undefined;
+            }
+
+            const nextEventView = eventView.sortOnField(field, tableDataMeta);
+            const queryStringObject = nextEventView.generateQueryStringObject();
+
+            return {
+              ...location,
+              query: queryStringObject,
+            };
+          }
+
+          return (
+            <SortLink
+              align={align}
+              field={field}
+              eventView={eventView}
+              tableDataMeta={tableData && tableData.meta ? tableData.meta : undefined}
+              generateSortLink={generateSortLink}
+            />
+          );
+        }}
+      </HeaderCell>
     );
   };
 
@@ -417,42 +425,40 @@ class TableView extends React.Component<TableViewProps> {
           startColumnDrag,
           draggingColumnIndex,
           destinationColumnIndex,
-        }) => {
-          return (
-            <GridEditable
-              editFeatures={['organizations:discover-query']}
-              noEditMessage={t('Requires discover query feature.')}
-              onToggleEdit={this.onToggleEdit}
-              isColumnDragging={isColumnDragging}
-              gridHeadCellButtonProps={{className: DRAGGABLE_COLUMN_CLASSNAME_IDENTIFIER}}
-              isLoading={isLoading}
-              error={error}
-              data={tableData ? tableData.data : []}
-              columnOrder={this.generateColumnOrder({
-                initialColumnIndex: draggingColumnIndex,
-                destinationColumnIndex,
-              })}
-              columnSortBy={columnSortBy}
-              grid={{
-                renderHeadCell: this._renderGridHeaderCell as any,
-                renderBodyCell: this._renderGridBodyCell as any,
-                onResizeColumn: this._updateColumn as any,
-                renderPrependColumns: this._renderPrependColumns as any,
-                prependColumnWidths: ['40px'],
-              }}
-              modalEditColumn={{
-                renderBodyWithForm: renderModalBodyWithForm as any,
-                renderFooter: renderModalFooter,
-              }}
-              actions={{
-                deleteColumn: this._deleteColumn,
-                moveColumnCommit: this._moveColumnCommit,
-                onDragStart: startColumnDrag,
-                downloadAsCsv: () => downloadAsCsv(tableData, columnOrder, title),
-              }}
-            />
-          );
-        }}
+        }) => (
+          <GridEditable
+            editFeatures={['organizations:discover-query']}
+            noEditMessage={t('Requires discover query feature.')}
+            onToggleEdit={this.onToggleEdit}
+            isColumnDragging={isColumnDragging}
+            gridHeadCellButtonProps={{className: DRAGGABLE_COLUMN_CLASSNAME_IDENTIFIER}}
+            isLoading={isLoading}
+            error={error}
+            data={tableData ? tableData.data : []}
+            columnOrder={this.generateColumnOrder({
+              initialColumnIndex: draggingColumnIndex,
+              destinationColumnIndex,
+            })}
+            columnSortBy={columnSortBy}
+            grid={{
+              renderHeadCell: this._renderGridHeaderCell as any,
+              renderBodyCell: this._renderGridBodyCell as any,
+              onResizeColumn: this._updateColumn as any,
+              renderPrependColumns: this._renderPrependColumns as any,
+              prependColumnWidths: ['40px'],
+            }}
+            modalEditColumn={{
+              renderBodyWithForm: renderModalBodyWithForm as any,
+              renderFooter: renderModalFooter,
+            }}
+            actions={{
+              deleteColumn: this._deleteColumn,
+              moveColumnCommit: this._moveColumnCommit,
+              onDragStart: startColumnDrag,
+              downloadAsCsv: () => downloadAsCsv(tableData, columnOrder, title),
+            }}
+          />
+        )}
       </DraggableColumns>
     );
   }
@@ -472,8 +478,25 @@ const ExpandAggregateRow = (props: {
   const exploded = explodeField(eventViewField);
   const {aggregation} = exploded;
 
+  // count(column) drilldown
   if (aggregation === 'count') {
     const nextView = getExpandedResults(eventView, {}, dataRow);
+
+    const target = {
+      pathname: location.pathname,
+      query: nextView.generateQueryStringObject(),
+    };
+
+    return <Link to={target}>{children({willExpand: true})}</Link>;
+  }
+
+  // count_unique(column) drilldown
+  if (aggregation === 'count_unique') {
+    // Drilldown into each distinct value and get a count() for each value.
+    const nextView = getExpandedResults(eventView, {}, dataRow).withNewColumn({
+      field: '',
+      aggregation: 'count',
+    });
 
     const target = {
       pathname: location.pathname,
@@ -486,9 +509,18 @@ const ExpandAggregateRow = (props: {
   return <React.Fragment>{children({willExpand: false})}</React.Fragment>;
 };
 
-const StyledIconStack = styled(InlineSvg)`
-  vertical-align: top;
-  color: ${p => p.theme.gray3};
+const HeaderIcon = styled('span')`
+  & > svg {
+    vertical-align: top;
+    color: ${p => p.theme.gray3};
+  }
+`;
+
+// Fudge the icon down so it is center aligned with the table contents.
+const IconLink = styled(Link)`
+  position: relative;
+  display: inline-block;
+  top: 3px;
 `;
 
 export default TableView;

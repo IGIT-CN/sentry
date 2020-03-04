@@ -1,3 +1,21 @@
+export type IssueAlertRuleFormField =
+  | {
+      type: 'choice';
+      choices?: [string, string][];
+      initial?: string;
+      placeholder?: string;
+    }
+  | {
+      type: 'string';
+      initial?: string;
+      placeholder?: string;
+    }
+  | {
+      type: 'number';
+      placeholder?: number | string;
+      initial?: string;
+    };
+
 /**
  * These templates that tell the UI how to render the action or condition
  * and what fields it needs
@@ -7,20 +25,7 @@ export type IssueAlertRuleActionTemplate = {
   label: string;
   enabled: boolean;
   formFields?: {
-    [key: string]:
-      | {
-          type: 'choice';
-          choices: [string, string][];
-          placeholder?: string;
-        }
-      | {
-          type: 'string';
-          placeholder?: string;
-        }
-      | {
-          type: 'number';
-          placeholder?: number | string;
-        };
+    [key: string]: IssueAlertRuleFormField;
   };
 };
 export type IssueAlertRuleConditionTemplate = IssueAlertRuleActionTemplate;
@@ -57,32 +62,4 @@ export type UnsavedIssueAlertRule = {
 export type IssueAlertRule = UnsavedIssueAlertRule & {
   dateCreated: string;
   id: string;
-};
-
-/**
- * This is an Action that is associated to a Trigger in a Metric Alert Rule
- */
-export type MetricAction = {
-  /**
-   * The integration type e.g. 'email'
-   */
-  type: string;
-
-  /**
-   * e.g.
-   * - `user` - user id,
-   * - `team` - team id
-   * - `specific` - free text
-   */
-  allowedTargetTypes: Array<'user' | 'team' | 'specific'>;
-
-  /**
-   * Name of the integration. This is a text field that differentiates integrations from the same provider from each other
-   */
-  integrationName: string;
-
-  /**
-   * Integration id for this `type`, should be passed to backend as `integrationId` when creating an action
-   */
-  integrationId: number;
 };

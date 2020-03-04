@@ -39,9 +39,6 @@ def test_get_json_meta_type():
     assert get_json_meta_type("transaction", "Char") == "string"
     assert get_json_meta_type("foo", "unknown") == "string"
     assert get_json_meta_type("other", "") == "string"
-    assert get_json_meta_type("p99", "number") == "duration"
-    assert get_json_meta_type("p95", "number") == "duration"
-    assert get_json_meta_type("p75", "number") == "duration"
     assert get_json_meta_type("avg_duration", "number") == "duration"
     assert get_json_meta_type("duration", "number") == "duration"
 
@@ -257,9 +254,7 @@ class ParseSearchQueryTest(unittest.TestCase):
     def test_invalid_date_formats(self):
         invalid_queries = ["first_seen:hello", "first_seen:123", "first_seen:2018-01-01T00:01ZZ"]
         for invalid_query in invalid_queries:
-            with self.assertRaises(
-                InvalidSearchQuery, expected_regex="Invalid format for numeric search"
-            ):
+            with self.assertRaisesRegexp(InvalidSearchQuery, "Invalid format for date search"):
                 parse_search_query(invalid_query)
 
     def test_specific_time_filter(self):
@@ -414,10 +409,49 @@ class ParseSearchQueryTest(unittest.TestCase):
                 key=SearchKey(name="device.family"), operator="=", value=SearchValue(raw_value="")
             )
         ]
-        with self.assertRaises(
-            InvalidSearchQuery, expected_regex="Invalid format for numeric search"
-        ):
+        with self.assertRaisesRegexp(InvalidSearchQuery, "Empty string after 'device.family:'"):
             parse_search_query("device.family:")
+
+    def test_escaped_quote_value(self):
+        assert parse_search_query('device.family:\\"') == [
+            SearchFilter(
+                key=SearchKey(name="device.family"), operator="=", value=SearchValue(raw_value='"')
+            )
+        ]
+
+        assert parse_search_query('device.family:te\\"st') == [
+            SearchFilter(
+                key=SearchKey(name="device.family"),
+                operator="=",
+                value=SearchValue(raw_value='te"st'),
+            )
+        ]
+
+        # This is a weird case. I think this should be an error, but it doesn't seem trivial to rewrite
+        # the grammar to handle that.
+        assert parse_search_query('url:"te"st') == [
+            SearchFilter(
+                key=SearchKey(name="url"), operator="=", value=SearchValue(raw_value="te")
+            ),
+            SearchFilter(
+                key=SearchKey(name="message"), operator="=", value=SearchValue(raw_value="st")
+            ),
+        ]
+
+    def test_trailing_quote_value(self):
+        tests = [
+            ('"test', "device.family:{}"),
+            ('test"', "url:{}"),
+            ('"test', "url:{} transaction:abadcafe"),
+            ('te"st', "url:{} transaction:abadcafe"),
+        ]
+
+        for test in tests:
+            with self.assertRaisesRegexp(
+                InvalidSearchQuery,
+                "Invalid quote at '{}': quotes must enclose text or be escaped.".format(test[0]),
+            ):
+                parse_search_query(test[1].format(test[0]))
 
     def test_custom_tag(self):
         assert parse_search_query("fruit:apple release:1.2.1") == [
@@ -477,8 +511,8 @@ class ParseSearchQueryTest(unittest.TestCase):
         ]
 
     def test_is_query_unsupported(self):
-        with self.assertRaises(
-            InvalidSearchQuery, expected_regex="queries are only supported in issue search"
+        with self.assertRaisesRegexp(
+            InvalidSearchQuery, ".*queries are only supported in issue search.*"
         ):
             parse_search_query("is:unassigned")
 
@@ -512,9 +546,7 @@ class ParseSearchQueryTest(unittest.TestCase):
     def test_invalid_numeric_fields(self):
         invalid_queries = ["project.id:one", "issue.id:two", "transaction.duration:>hotdog"]
         for invalid_query in invalid_queries:
-            with self.assertRaises(
-                InvalidSearchQuery, expected_regex="Invalid format for numeric search"
-            ):
+            with self.assertRaisesRegexp(InvalidSearchQuery, "Invalid format for numeric search"):
                 parse_search_query(invalid_query)
 
     def test_quotes_filtered_on_raw(self):
@@ -881,7 +913,7 @@ class ParseBooleanSearchQueryTest(unittest.TestCase):
 
 class GetSnubaQueryArgsTest(TestCase):
     def test_simple(self):
-        filter = get_filter(
+        _filter = get_filter(
             "user.email:foo@example.com release:1.2.1 fruit:apple hello",
             {
                 "project_id": [1, 2, 3],
@@ -890,25 +922,25 @@ class GetSnubaQueryArgsTest(TestCase):
             },
         )
 
-        assert filter.conditions == [
+        assert _filter.conditions == [
             ["user.email", "=", "foo@example.com"],
             ["release", "=", "1.2.1"],
             [["ifNull", ["fruit", "''"]], "=", "apple"],
             [["positionCaseInsensitive", ["message", "'hello'"]], "!=", 0],
         ]
-        assert filter.start == datetime.datetime(2015, 5, 18, 10, 15, 1, tzinfo=timezone.utc)
-        assert filter.end == datetime.datetime(2015, 5, 19, 10, 15, 1, tzinfo=timezone.utc)
-        assert filter.filter_keys == {"project_id": [1, 2, 3]}
-        assert filter.project_ids == [1, 2, 3]
-        assert not filter.group_ids
-        assert not filter.event_ids
+        assert _filter.start == datetime.datetime(2015, 5, 18, 10, 15, 1, tzinfo=timezone.utc)
+        assert _filter.end == datetime.datetime(2015, 5, 19, 10, 15, 1, tzinfo=timezone.utc)
+        assert _filter.filter_keys == {"project_id": [1, 2, 3]}
+        assert _filter.project_ids == [1, 2, 3]
+        assert not _filter.group_ids
+        assert not _filter.event_ids
 
     def test_negation(self):
-        filter = get_filter("!user.email:foo@example.com")
-        assert filter.conditions == [
+        _filter = get_filter("!user.email:foo@example.com")
+        assert _filter.conditions == [
             [[["isNull", ["user.email"]], "=", 1], ["user.email", "!=", "foo@example.com"]]
         ]
-        assert filter.filter_keys == {}
+        assert _filter.filter_keys == {}
 
     def test_implicit_and_explicit_tags(self):
         assert get_filter("tags[fruit]:apple").conditions == [
@@ -922,40 +954,40 @@ class GetSnubaQueryArgsTest(TestCase):
         ]
 
     def test_no_search(self):
-        filter = get_filter(
+        _filter = get_filter(
             params={
                 "project_id": [1, 2, 3],
                 "start": datetime.datetime(2015, 5, 18, 10, 15, 1, tzinfo=timezone.utc),
                 "end": datetime.datetime(2015, 5, 19, 10, 15, 1, tzinfo=timezone.utc),
             }
         )
-        assert not filter.conditions
-        assert filter.filter_keys == {"project_id": [1, 2, 3]}
-        assert filter.start == datetime.datetime(2015, 5, 18, 10, 15, 1, tzinfo=timezone.utc)
-        assert filter.end == datetime.datetime(2015, 5, 19, 10, 15, 1, tzinfo=timezone.utc)
+        assert not _filter.conditions
+        assert _filter.filter_keys == {"project_id": [1, 2, 3]}
+        assert _filter.start == datetime.datetime(2015, 5, 18, 10, 15, 1, tzinfo=timezone.utc)
+        assert _filter.end == datetime.datetime(2015, 5, 19, 10, 15, 1, tzinfo=timezone.utc)
 
     def test_wildcard(self):
-        filter = get_filter("release:3.1.* user.email:*@example.com")
-        assert filter.conditions == [
+        _filter = get_filter("release:3.1.* user.email:*@example.com")
+        assert _filter.conditions == [
             [["match", ["release", "'(?i)^3\\.1\\..*$'"]], "=", 1],
             [["match", ["user.email", "'(?i)^.*\\@example\\.com$'"]], "=", 1],
         ]
-        assert filter.filter_keys == {}
+        assert _filter.filter_keys == {}
 
     def test_wildcard_event_id(self):
         with self.assertRaises(InvalidSearchQuery):
             get_filter("id:deadbeef*")
 
     def test_negated_wildcard(self):
-        filter = get_filter("!release:3.1.* user.email:*@example.com")
-        assert filter.conditions == [
+        _filter = get_filter("!release:3.1.* user.email:*@example.com")
+        assert _filter.conditions == [
             [
                 [["isNull", ["release"]], "=", 1],
                 [["match", ["release", "'(?i)^3\\.1\\..*$'"]], "!=", 1],
             ],
             [["match", ["user.email", "'(?i)^.*\\@example\\.com$'"]], "=", 1],
         ]
-        assert filter.filter_keys == {}
+        assert _filter.filter_keys == {}
 
     def test_escaped_wildcard(self):
         assert get_filter("release:3.1.\\* user.email:\\*@example.com").conditions == [
@@ -970,15 +1002,15 @@ class GetSnubaQueryArgsTest(TestCase):
         ]
 
     def test_wildcard_array_field(self):
-        filter = get_filter(
+        _filter = get_filter(
             "error.value:Deadlock* stack.filename:*.py stack.abs_path:%APP_DIR%/th_ing*"
         )
-        assert filter.conditions == [
+        assert _filter.conditions == [
             ["error.value", "LIKE", "Deadlock%"],
             ["stack.filename", "LIKE", "%.py"],
             ["stack.abs_path", "LIKE", "\\%APP\\_DIR\\%/th\\_ing%"],
         ]
-        assert filter.filter_keys == {}
+        assert _filter.filter_keys == {}
 
     def test_has(self):
         assert get_filter("has:release").conditions == [[["isNull", ["release"]], "!=", 1]]
@@ -1013,20 +1045,20 @@ class GetSnubaQueryArgsTest(TestCase):
             get_filter("(user.email:foo@example.com OR user.email:bar@example.com")
 
     def test_issue_id_filter(self):
-        filter = get_filter("issue.id:1")
-        assert not filter.conditions
-        assert filter.filter_keys == {"group_id": [1]}
-        assert filter.group_ids == [1]
+        _filter = get_filter("issue.id:1")
+        assert not _filter.conditions
+        assert _filter.filter_keys == {"group_id": [1]}
+        assert _filter.group_ids == [1]
 
-        filter = get_filter("issue.id:1 issue.id:2 issue.id:3")
-        assert not filter.conditions
-        assert filter.filter_keys == {"group_id": [1, 2, 3]}
-        assert filter.group_ids == [1, 2, 3]
+        _filter = get_filter("issue.id:1 issue.id:2 issue.id:3")
+        assert not _filter.conditions
+        assert _filter.filter_keys == {"group_id": [1, 2, 3]}
+        assert _filter.group_ids == [1, 2, 3]
 
-        filter = get_filter("issue.id:1 user.email:foo@example.com")
-        assert filter.conditions == [["user.email", "=", "foo@example.com"]]
-        assert filter.filter_keys == {"group_id": [1]}
-        assert filter.group_ids == [1]
+        _filter = get_filter("issue.id:1 user.email:foo@example.com")
+        assert _filter.conditions == [["user.email", "=", "foo@example.com"]]
+        assert _filter.filter_keys == {"group_id": [1]}
+        assert _filter.group_ids == [1]
 
     def test_issue_filter(self):
         with pytest.raises(InvalidSearchQuery) as err:
@@ -1036,60 +1068,60 @@ class GetSnubaQueryArgsTest(TestCase):
 
     def test_environment_param(self):
         params = {"environment": ["", "prod"]}
-        filter = get_filter("", params)
+        _filter = get_filter("", params)
         # Should generate OR conditions
-        assert filter.conditions == [
+        assert _filter.conditions == [
             [["environment", "IS NULL", None], ["environment", "=", "prod"]]
         ]
-        assert filter.filter_keys == {}
-        assert filter.group_ids == []
+        assert _filter.filter_keys == {}
+        assert _filter.group_ids == []
 
         params = {"environment": ["dev", "prod"]}
-        filter = get_filter("", params)
-        assert filter.conditions == [[["environment", "IN", {"dev", "prod"}]]]
-        assert filter.filter_keys == {}
-        assert filter.group_ids == []
+        _filter = get_filter("", params)
+        assert _filter.conditions == [[["environment", "IN", {"dev", "prod"}]]]
+        assert _filter.filter_keys == {}
+        assert _filter.group_ids == []
 
     def test_environment_condition_string(self):
-        filter = get_filter("environment:dev")
-        assert filter.conditions == [[["environment", "=", "dev"]]]
-        assert filter.filter_keys == {}
-        assert filter.group_ids == []
+        _filter = get_filter("environment:dev")
+        assert _filter.conditions == [[["environment", "=", "dev"]]]
+        assert _filter.filter_keys == {}
+        assert _filter.group_ids == []
 
-        filter = get_filter("!environment:dev")
-        assert filter.conditions == [[["environment", "!=", "dev"]]]
-        assert filter.filter_keys == {}
-        assert filter.group_ids == []
+        _filter = get_filter("!environment:dev")
+        assert _filter.conditions == [[["environment", "!=", "dev"]]]
+        assert _filter.filter_keys == {}
+        assert _filter.group_ids == []
 
-        filter = get_filter("environment:dev environment:prod")
+        _filter = get_filter("environment:dev environment:prod")
         # Will generate conditions that will never find anything
-        assert filter.conditions == [[["environment", "=", "dev"]], [["environment", "=", "prod"]]]
-        assert filter.filter_keys == {}
-        assert filter.group_ids == []
+        assert _filter.conditions == [[["environment", "=", "dev"]], [["environment", "=", "prod"]]]
+        assert _filter.filter_keys == {}
+        assert _filter.group_ids == []
 
-        filter = get_filter('environment:""')
+        _filter = get_filter('environment:""')
         # The '' environment is Null in snuba
-        assert filter.conditions == [[["environment", "IS NULL", None]]]
-        assert filter.filter_keys == {}
-        assert filter.group_ids == []
+        assert _filter.conditions == [[["environment", "IS NULL", None]]]
+        assert _filter.filter_keys == {}
+        assert _filter.group_ids == []
 
     def test_project_name(self):
         p1 = self.create_project(organization=self.organization)
         p2 = self.create_project(organization=self.organization)
 
         params = {"project_id": [p1.id, p2.id]}
-        filter = get_filter("project.name:{}".format(p1.slug), params)
-        assert filter.conditions == [["project_id", "=", p1.id]]
-        assert filter.filter_keys == {"project_id": [p1.id, p2.id]}
-        assert filter.project_ids == [p1.id, p2.id]
+        _filter = get_filter("project.name:{}".format(p1.slug), params)
+        assert _filter.conditions == [["project_id", "=", p1.id]]
+        assert _filter.filter_keys == {"project_id": [p1.id, p2.id]}
+        assert _filter.project_ids == [p1.id, p2.id]
 
         params = {"project_id": [p1.id, p2.id]}
-        filter = get_filter("!project.name:{}".format(p1.slug), params)
-        assert filter.conditions == [
+        _filter = get_filter("!project.name:{}".format(p1.slug), params)
+        assert _filter.conditions == [
             [[["isNull", ["project_id"]], "=", 1], ["project_id", "!=", p1.id]]
         ]
-        assert filter.filter_keys == {"project_id": [p1.id, p2.id]}
-        assert filter.project_ids == [p1.id, p2.id]
+        assert _filter.filter_keys == {"project_id": [p1.id, p2.id]}
+        assert _filter.project_ids == [p1.id, p2.id]
 
         with pytest.raises(InvalidSearchQuery) as err:
             params = {"project_id": []}
@@ -1122,12 +1154,20 @@ class GetSnubaQueryArgsTest(TestCase):
         assert result.having == [["rpm", ">", 100]]
 
     def test_function_with_alias(self):
-        result = get_filter("p95():>100")
-        assert result.having == [["p95", ">", 100]]
+        result = get_filter("percentile(transaction.duration, 0.95):>100")
+        assert result.having == [["percentile_transaction_duration_0_95", ">", 100]]
 
     def test_function_arguments(self):
         result = get_filter("percentile(transaction.duration, 0.75):>100")
         assert result.having == [["percentile_transaction_duration_0_75", ">", 100]]
+
+    def test_function_with_float_arguments(self):
+        result = get_filter("apdex(transaction.duration, 300):>0.5")
+        assert result.having == [["apdex_transaction_duration_300", ">", 0.5]]
+
+    def test_function_with_negative_arguments(self):
+        result = get_filter("apdex(transaction.duration, 300):>-0.5")
+        assert result.having == [["apdex_transaction_duration_300", ">", -0.5]]
 
     @pytest.mark.xfail(reason="this breaks issue search so needs to be redone")
     def test_trace_id(self):
@@ -1146,8 +1186,10 @@ class ResolveFieldListTest(unittest.TestCase):
         fields = ["event.type", "message"]
         result = resolve_field_list(fields, {})
         assert result["selected_columns"] == ["event.type", "message", "id", "project.id"]
-        assert result["aggregations"] == []
-        assert result["groupby"] == []
+        assert result["aggregations"] == [
+            ["transform(project_id, array(), array(), '')", None, "project.name"]
+        ]
+        assert result["groupby"] == ["event.type", "message", "id", "project.id"]
 
     def test_automatic_fields_with_aggregate_aliases(self):
         fields = ["title", "last_seen"]
@@ -1158,39 +1200,20 @@ class ResolveFieldListTest(unittest.TestCase):
             ["max", "timestamp", "last_seen"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == ["title"]
-
-    def test_field_alias_duration_expansion(self):
-        fields = ["avg(transaction.duration)", "apdex", "impact", "p75", "p95", "p99"]
-        result = resolve_field_list(fields, {})
-        assert result["selected_columns"] == []
-        assert result["aggregations"] == [
-            ["avg", "transaction.duration", "avg_transaction_duration"],
-            ["apdex(duration, 300)", None, "apdex"],
-            [
-                "plus(minus(1, divide(plus(countIf(less(duration, 300)),divide(countIf(and(greater(duration, 300),less(duration, 1200))),2)),count())),multiply(minus(1,divide(1,sqrt(uniq(user)))),3))",
-                None,
-                "impact",
-            ],
-            ["quantile(0.75)(duration)", None, "p75"],
-            ["quantile(0.95)(duration)", None, "p95"],
-            ["quantile(0.99)(duration)", None, "p99"],
-            ["argMax", ["id", "timestamp"], "latest_event"],
-            ["argMax", ["project.id", "timestamp"], "projectid"],
-        ]
-        assert result["groupby"] == []
 
     def test_field_alias_duration_expansion_with_brackets(self):
         fields = [
             "avg(transaction.duration)",
             "latest_event()",
             "last_seen()",
-            "apdex()",
-            "impact()",
-            "p75()",
-            "p95()",
-            "p99()",
+            "apdex(transaction.duration, 300)",
+            "impact(transaction.duration, 300)",
+            "percentile(transaction.duration, 0.75)",
+            "percentile(transaction.duration, 0.95)",
+            "percentile(transaction.duration, 0.99)",
         ]
         result = resolve_field_list(fields, {})
 
@@ -1199,45 +1222,47 @@ class ResolveFieldListTest(unittest.TestCase):
             ["avg", "transaction.duration", "avg_transaction_duration"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["max", "timestamp", "last_seen"],
-            ["apdex(duration, 300)", None, "apdex"],
+            ["apdex(duration, 300)", None, "apdex_transaction_duration_300"],
             [
                 "plus(minus(1, divide(plus(countIf(less(duration, 300)),divide(countIf(and(greater(duration, 300),less(duration, 1200))),2)),count())),multiply(minus(1,divide(1,sqrt(uniq(user)))),3))",
                 None,
-                "impact",
+                "impact_transaction_duration_300",
             ],
-            ["quantile(0.75)(duration)", None, "p75"],
-            ["quantile(0.95)(duration)", None, "p95"],
-            ["quantile(0.99)(duration)", None, "p99"],
+            ["quantile(0.75)(duration)", None, "percentile_transaction_duration_0_75"],
+            ["quantile(0.95)(duration)", None, "percentile_transaction_duration_0_95"],
+            ["quantile(0.99)(duration)", None, "percentile_transaction_duration_0_99"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
 
     def test_field_alias_expansion(self):
-        fields = ["title", "last_seen", "latest_event", "project", "issue", "user", "message"]
+        fields = ["title", "last_seen()", "latest_event()", "project", "issue", "user", "message"]
         result = resolve_field_list(fields, {})
         assert result["selected_columns"] == [
             "title",
-            "project.id",
             "issue.id",
             "user.id",
             "user.username",
             "user.email",
             "user.ip",
             "message",
+            "project.id",
         ]
         assert result["aggregations"] == [
             ["max", "timestamp", "last_seen"],
             ["argMax", ["id", "timestamp"], "latest_event"],
+            ["transform(project_id, array(), array(), '')", None, "project"],
         ]
         assert result["groupby"] == [
             "title",
-            "project.id",
             "issue.id",
             "user.id",
             "user.username",
             "user.email",
             "user.ip",
             "message",
+            "project.id",
         ]
 
     def test_aggregate_function_expansion(self):
@@ -1251,6 +1276,7 @@ class ResolveFieldListTest(unittest.TestCase):
             ["min", "timestamp", "min_timestamp"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
 
@@ -1265,6 +1291,7 @@ class ResolveFieldListTest(unittest.TestCase):
             ["count", None, "count_transaction_duration"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
 
@@ -1275,25 +1302,29 @@ class ResolveFieldListTest(unittest.TestCase):
             ["uniq", "user.id", "count_unique_user_id"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
 
     def test_aggregate_function_invalid_name(self):
         with pytest.raises(InvalidSearchQuery) as err:
             fields = ["derp(user)"]
             resolve_field_list(fields, {})
-        assert "Unknown aggregate" in six.text_type(err)
+        assert "derp(user) is not a valid function" in six.text_type(err)
 
     def test_aggregate_function_case_sensitive(self):
         with pytest.raises(InvalidSearchQuery) as err:
             fields = ["MAX(user)"]
             resolve_field_list(fields, {})
-        assert "Unknown aggregate" in six.text_type(err)
+        assert "MAX(user) is not a valid function" in six.text_type(err)
 
     def test_aggregate_function_invalid_column(self):
         with pytest.raises(InvalidSearchQuery) as err:
             fields = ["min(message)"]
             resolve_field_list(fields, {})
-        assert "Invalid column" in six.text_type(err)
+        assert (
+            "InvalidSearchQuery: min(message): column argument invalid: message is not a numeric column"
+            in six.text_type(err)
+        )
 
     def test_percentile_function(self):
         fields = ["percentile(transaction.duration, 0.75)"]
@@ -1304,6 +1335,7 @@ class ResolveFieldListTest(unittest.TestCase):
             ["quantile(0.75)(duration)", None, "percentile_transaction_duration_0_75"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
 
@@ -1329,7 +1361,7 @@ class ResolveFieldListTest(unittest.TestCase):
             fields = ["percentile(id, 0.75)"]
             resolve_field_list(fields, {})
         assert (
-            "percentile(id, 0.75): column argument invalid: id is not a numeric column"
+            "percentile(id, 0.75): column argument invalid: id is not a duration column"
             in six.text_type(err)
         )
 
@@ -1349,6 +1381,7 @@ class ResolveFieldListTest(unittest.TestCase):
             ["divide(count(), divide(3600, 60))", None, "rpm_3600"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
 
@@ -1381,6 +1414,7 @@ class ResolveFieldListTest(unittest.TestCase):
             ["divide(count(), divide(3600, 60))", None, "rpm"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
 
@@ -1393,6 +1427,7 @@ class ResolveFieldListTest(unittest.TestCase):
             ["divide(count(), 3600)", None, "rps_3600"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
 
@@ -1440,8 +1475,10 @@ class ResolveFieldListTest(unittest.TestCase):
         snuba_args = {"orderby": "-message"}
         result = resolve_field_list(fields, snuba_args)
         assert result["selected_columns"] == ["message", "id", "project.id"]
-        assert result["aggregations"] == []
-        assert result["groupby"] == []
+        assert result["aggregations"] == [
+            ["transform(project_id, array(), array(), '')", None, "project.name"]
+        ]
+        assert result["groupby"] == ["message", "id", "project.id"]
 
     def test_orderby_field_alias(self):
         fields = ["last_seen"]
@@ -1452,6 +1489,7 @@ class ResolveFieldListTest(unittest.TestCase):
             ["max", "timestamp", "last_seen"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
 
@@ -1465,5 +1503,16 @@ class ResolveFieldListTest(unittest.TestCase):
             ["uniq", "user", "count_unique_user"],
             ["argMax", ["id", "timestamp"], "latest_event"],
             ["argMax", ["project.id", "timestamp"], "projectid"],
+            ["transform(projectid, array(), array(), '')", None, "project.name"],
         ]
         assert result["groupby"] == []
+
+    def test_orderby_project(self):
+        fields = ["project"]
+        snuba_args = {"orderby": "-project"}
+        result = resolve_field_list(fields, snuba_args)
+        assert result["orderby"] == ["-project"]
+        assert result["aggregations"] == [
+            ["transform(project_id, array(), array(), '')", None, "project"]
+        ]
+        assert result["groupby"] == ["project.id", "id"]
